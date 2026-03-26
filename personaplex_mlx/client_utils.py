@@ -3,6 +3,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from dataclasses import dataclass
+import os
 import sys
 
 
@@ -118,7 +119,12 @@ class Line:
 
 
 class Printer:
-    def __init__(self, max_cols: int = 80, stream=sys.stdout, err_stream=sys.stderr):
+    def __init__(self, max_cols: int | None = None, stream=sys.stdout, err_stream=sys.stderr):
+        if max_cols is None:
+            try:
+                max_cols = os.get_terminal_size().columns - 4
+            except OSError:
+                max_cols = 80
         self.max_cols = max_cols
         self.line = Line(stream)
         self.stream = stream

@@ -15,6 +15,7 @@ import sphn
 
 from . import models, utils
 from .client_utils import make_log
+from .utils.audio import reshape_input_tokens
 from .persona_utils import (
     DEFAULT_HF_REPO,
     get_lm_config,
@@ -28,15 +29,6 @@ from .persona_utils import (
 
 def log(level: str, msg: str):
     print(make_log(level, msg))
-
-
-def _reshape_input_tokens(encoded: np.ndarray, user_codebooks: int) -> mx.array:
-    tokens = mx.array(encoded).transpose(0, 2, 1)[:, :, :user_codebooks]
-    if tokens.shape[1] == user_codebooks and tokens.shape[2] == 1:
-        return tokens
-    if tokens.shape[1] == 1 and tokens.shape[2] == user_codebooks:
-        return tokens.transpose(0, 2, 1)
-    raise ValueError(f"unexpected encoded shape {tokens.shape}")
 
 
 def main():
@@ -78,7 +70,7 @@ def main():
     for idx in range(steps):
         pcm_data = in_pcms[:, idx * 1920 : (idx + 1) * 1920]
         encoded = audio_tokenizer.encode_step(pcm_data[None, 0:1])
-        model_input = _reshape_input_tokens(encoded, gen.user_codebooks)
+        model_input = reshape_input_tokens(encoded, gen.user_codebooks)
         text_token = gen.step(input_tokens=model_input)
         if text_token is not None:
             text_value = int(text_token[0].item())

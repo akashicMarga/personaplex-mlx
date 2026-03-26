@@ -30,6 +30,8 @@ class LmGen:
         on_text_hook=None,
         on_audio_hook=None,
         audio_silence_frame_cnt: int = 1,
+        cfg_is_masked_until: list[int] | None = None,
+        cfg_is_no_text: bool = False,
     ):
         self.batch_size = batch_size
         self.model = model
@@ -41,6 +43,8 @@ class LmGen:
         self.on_text_hook = on_text_hook
         self.on_audio_hook = on_audio_hook
         self.audio_silence_frame_cnt = audio_silence_frame_cnt
+        self.cfg_is_masked_until = cfg_is_masked_until
+        self.cfg_is_no_text = cfg_is_no_text
         self.num_codebooks = 1 + model.cfg.audio_codebooks
         self.assistant_codebooks = model.cfg.audio_tokens_per_stream
         self.user_codebooks = model.cfg.audio_codebooks - self.assistant_codebooks
@@ -214,7 +218,7 @@ class LmGen:
             self.audio_sampler,
             next_text[:, None],
             self.model.depformer_cache,
-            cfg_coef=self.cfg_coef,
+            cfg_coef=self._effective_cfg_coef(),
             forced_audio_tokens=target_[:, 1:, 0],
             forced_audio_mask=provided_[:, 1:, 0],
         )
@@ -244,6 +248,19 @@ class LmGen:
         self.step_idx += 1
         return sampled_text[:, None]
 
+    def _effective_cfg_coef(self) -> float:
+        """Return the effective CFG coefficient for the current step.
+
+        When cfg_is_masked_until is set, CFG is disabled (coef=1.0)
+        until the step reaches the masked-until threshold for all batch items.
+        """
+        if self.cfg_coef == 1.0:
+            return 1.0
+        if self.cfg_is_masked_until is not None:
+            if all(self.step_idx < until for until in self.cfg_is_masked_until):
+                return 1.0
+        return self.cfg_coef
+
     def step(
         self,
         other_audio_tokens: mx.array | None = None,
@@ -253,6 +270,12 @@ class LmGen:
         moshi_tokens: mx.array | None = None,
         text_token: mx.array | int | None = None,
     ) -> mx.array | None:
+        """Run one streaming step.
+
+        Note: CFG (cfg_coef != 1) is only supported via the _sample() path
+        used by TTSModel.generate(). The streaming step() path used by
+        local/web inference does not apply CFG — it relies on cfg_coef=1.0.
+        """
         if input_tokens is None:
             input_tokens = other_audio_tokens
         prepared = self._prepare_step_input(

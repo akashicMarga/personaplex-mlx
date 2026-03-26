@@ -14,6 +14,7 @@ import sentencepiece
 import sphn
 
 from . import models, utils
+from .utils.audio import reshape_input_tokens
 from .persona_utils import (
     DEFAULT_HF_REPO,
     get_lm_config,
@@ -30,15 +31,6 @@ from .persona_utils import (
 
 def log(level: str, msg: str):
     print(f"[{level}] {msg}")
-
-
-def _reshape_input_tokens(encoded: np.ndarray, user_codebooks: int) -> mx.array:
-    tokens = mx.array(encoded).transpose(0, 2, 1)[:, :, :user_codebooks]
-    if tokens.shape[1] == user_codebooks and tokens.shape[2] == 1:
-        return tokens
-    if tokens.shape[1] == 1 and tokens.shape[2] == user_codebooks:
-        return tokens.transpose(0, 2, 1)
-    raise ValueError(f"unexpected encoded shape {tokens.shape}")
 
 
 def main():
@@ -122,7 +114,7 @@ def main():
             pad = 1920 - pcm_data.shape[-1]
             pcm_data = np.pad(pcm_data, ((0, 0), (0, pad)), mode="constant")
         encoded = audio_tokenizer.encode_step(pcm_data[None, 0:1])
-        model_input = _reshape_input_tokens(encoded, gen.user_codebooks)
+        model_input = reshape_input_tokens(encoded, gen.user_codebooks)
         text_token = gen.step(input_tokens=model_input)
         if text_token is not None:
             token_id = int(text_token[0].item())
@@ -141,7 +133,9 @@ def main():
         raise RuntimeError("no output audio generated")
 
     all_out_pcm_np = np.concatenate(all_out_pcm, axis=-1)
-    all_out_pcm_np = all_out_pcm_np[:, :, :total_samples]
+    # Trim to match the original input length, clamping to actual output size.
+    out_samples = min(total_samples, all_out_pcm_np.shape[-1])
+    all_out_pcm_np = all_out_pcm_np[:, :, :out_samples]
     rustymimi.write_wav(args.output_wav, all_out_pcm_np[0, 0], sample_rate=24000)
     with open(args.output_text, "w", encoding="utf-8") as fobj:
         json.dump(generated_text_tokens, fobj, ensure_ascii=False)

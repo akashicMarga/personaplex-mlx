@@ -233,8 +233,25 @@ class DepFormerSlice(nn.Module):
         self.linear_out = nn.Linear(dim, out_vocab_size, bias=False)
         self.transformer = Transformer(cfg.transformer)
 
-    def __call__(self, _: mx.array) -> mx.array:
-        raise ValueError("not implemented")
+    def __call__(
+        self,
+        main_transformer_out: mx.array,
+        token: mx.array,
+        cache: list[LayerCache],
+    ) -> mx.array:
+        """Forward pass for a single depformer slice.
+
+        Args:
+            main_transformer_out: output from the main transformer, shape (B, T, D_main).
+            token: input token ids for this slice, shape (B, T).
+            cache: list of LayerCache for the transformer layers.
+
+        Returns:
+            Logits of shape (B, T, out_vocab_size).
+        """
+        xs = self.linear_in(main_transformer_out) + self.emb(token)
+        xs = self.transformer(xs, cache=cache)
+        return self.linear_out(xs)
 
 
 class DepFormer(nn.Module):
@@ -253,8 +270,33 @@ class DepFormer(nn.Module):
             )
             self.slices.append(slice)
 
-    def __call__(self, _: mx.array) -> mx.array:
-        raise ValueError("not implemented")
+    def __call__(
+        self,
+        main_transformer_out: mx.array,
+        sequence_tokens: mx.array,
+        cache: list[LayerCache],
+    ) -> list[mx.array]:
+        """Forward pass through all depformer slices.
+
+        Args:
+            main_transformer_out: output from main transformer, shape (B, T, D_main).
+                When using CFG, batch is doubled: first half conditional, second half unconditional.
+            sequence_tokens: ground-truth tokens for teacher forcing, shape (B, num_slices, T).
+                sequence_tokens[:, 0, :] is the text token, sequence_tokens[:, i, :] for i>0
+                are previous audio codebook tokens.
+            cache: shared list of LayerCache (reset between calls, shared across slices).
+
+        Returns:
+            List of logit tensors, one per slice, each of shape (B, T, out_vocab_size).
+        """
+        for c in cache:
+            c.reset()
+        all_logits = []
+        for slice_idx, slice in enumerate(self.slices):
+            token = sequence_tokens[:, slice_idx, :]
+            logits = slice(main_transformer_out, token, cache)
+            all_logits.append(logits)
+        return all_logits
 
     def sample(
         self,
@@ -589,10 +631,10 @@ class Lm(nn.Module):
             audio_sampler=sampling.Sampler(),
             ct=ct,
         )
-        if text.sum().item() == 42:
-            raise ValueError(42)
-        if audio is not None and audio.sum().item() == 42:
-            raise ValueError(42)
+        # Force evaluation so the graph is compiled.
+        mx.eval(text)
+        if audio is not None:
+            mx.eval(audio)
         for c in self.transformer_cache:
             c.reset()
 

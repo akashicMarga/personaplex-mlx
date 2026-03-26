@@ -144,7 +144,7 @@ def main():
     if raw_config is None:
         raw_config = hf_get("config.json", args.hf_repo)
 
-    log("info", f"loading config from {args.config}")
+    log("info", f"loading config from {raw_config}")
     with open(hf_get(raw_config), "r") as fobj:
         raw_config = json.load(fobj)
 
@@ -173,10 +173,8 @@ def main():
 
     if args.quantize is not None:
         log("info", f"quantizing model to {args.quantize} bits")
-        nn.quantize(model.depformer, bits=args.quantize)
-        for layer in model.transformer.layers:
-            nn.quantize(layer.self_attn, bits=args.quantize)
-            nn.quantize(layer.gating, bits=args.quantize)
+        # Quantize all linear layers in both transformer and depformer consistently.
+        nn.quantize(model, bits=args.quantize)
 
     log("info", f"loading the text tokenizer from {tokenizer}")
     text_tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer))  # type: ignore
@@ -337,7 +335,14 @@ def main():
             if not line:
                 continue
             data = json.loads(line)
-            batch.append(TTSRequest(**data))
+            req = TTSRequest(**data)
+            if not req.turns:
+                log("warning", f"skipping request {req.id}: no turns")
+                continue
+            if not req.voices:
+                log("warning", f"skipping request {req.id}: no voices")
+                continue
+            batch.append(req)
 
             # We currently only support a batch size of 1 in the mlx implementation.
             _flush()

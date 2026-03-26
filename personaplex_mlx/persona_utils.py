@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import posixpath
 import random
 import tarfile
 from pathlib import Path
@@ -32,8 +33,12 @@ def hf_hub_download(repo: str | None, path: str) -> str:
 def hf_get(filename: str, hf_repo: str | None = None) -> str:
     if filename.startswith("hf://"):
         parts = filename[5:].split("/")
+        if len(parts) < 3:
+            raise ValueError(f"invalid hf:// URL, expected hf://org/repo/path: {filename!r}")
         repo_name = parts[0] + "/" + parts[1]
-        rel_path = "/".join(parts[2:])
+        rel_path = posixpath.normpath("/".join(parts[2:]))
+        if rel_path.startswith("..") or rel_path.startswith("/"):
+            raise ValueError(f"path traversal detected in hf:// URL: {filename!r}")
         return hf_hub_download(repo_name, rel_path)
     if filename.startswith("file://"):
         return filename[7:]
@@ -130,6 +135,16 @@ def load_lm_weights(
         nn.quantize(model, bits=quantized, group_size=group_size)
 
 
+def _safe_extractall(tar: tarfile.TarFile, dest: Path) -> None:
+    """Extract tar contents safely, rejecting path traversal attempts."""
+    dest_resolved = dest.resolve()
+    for member in tar.getmembers():
+        member_path = (dest / member.name).resolve()
+        if not str(member_path).startswith(str(dest_resolved)):
+            raise ValueError(f"tar member {member.name!r} escapes destination directory")
+    tar.extractall(path=dest)
+
+
 def get_voice_prompt_dir(voice_prompt_dir: str | None, hf_repo: str) -> str:
     if voice_prompt_dir is not None:
         return voice_prompt_dir
@@ -138,7 +153,7 @@ def get_voice_prompt_dir(voice_prompt_dir: str | None, hf_repo: str) -> str:
     voices_dir = voices_tgz_path.parent / "voices"
     if not voices_dir.exists():
         with tarfile.open(voices_tgz_path, "r:gz") as tar:
-            tar.extractall(path=voices_tgz_path.parent)
+            _safe_extractall(tar, voices_tgz_path.parent)
     if not voices_dir.exists():
         raise RuntimeError("voices.tgz did not contain a voices/ directory")
     return str(voices_dir)

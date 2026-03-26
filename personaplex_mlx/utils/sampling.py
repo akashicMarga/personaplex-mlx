@@ -141,12 +141,20 @@ class Sampler:
     min_tokens_to_keep: int = 1
     logit_bias: dict[int, float] | None = None
 
-    def __call__(self, logits: mx.array) -> tuple[mx.array, mx.array]:
+    def __post_init__(self):
+        # Pre-compute logit bias arrays so we don't recreate them every call.
         if self.logit_bias:
-            indices = mx.array(list(self.logit_bias.keys()))
-            values = mx.array(list(self.logit_bias.values()))
-            logits[:, indices] += values
-        logprobs = logits - mx.logsumexp(logits)
+            self._bias_indices = mx.array(list(self.logit_bias.keys()))
+            self._bias_values = mx.array(list(self.logit_bias.values()))
+        else:
+            self._bias_indices = None
+            self._bias_values = None
+
+    def __call__(self, logits: mx.array) -> tuple[mx.array, mx.array]:
+        if self._bias_indices is not None:
+            logits = mx.array(logits)  # ensure we don't mutate in-place
+            logits[:, self._bias_indices] += self._bias_values
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 
         if self.temp == 0:
             token = mx.argmax(logits, axis=-1)

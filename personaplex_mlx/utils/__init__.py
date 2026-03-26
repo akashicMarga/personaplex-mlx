@@ -5,3 +5,4 @@
 """Utilities."""
 
 from .sampling import Sampler
+from .audio import reshape_input_tokens

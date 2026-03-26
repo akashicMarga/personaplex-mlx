@@ -190,6 +190,27 @@ class Mimi(nn.Module):
         file: str,
         strict: bool = True,
     ) -> nn.Module:
+        # Compute the PyTorch flat-sequential indices for encoder/decoder layers
+        # dynamically from the SEANet config, rather than hardcoding them.
+        n_ratios = len(self.cfg.seanet.ratios)
+        n_res = self.cfg.seanet.nresidual_layers
+        # In PyTorch's flat Sequential for decoder:
+        #   0: init_conv1d
+        #   then for each ratio i: [ELU, ConvTranspose(upsample), ResBlock_0, ..., ResBlock_{n_res-1}]
+        #   each ratio block has (2 + n_res) entries
+        #   final: [ELU, final_conv1d] at indices [total-2, total-1] but mapped as single final_conv1d
+        block_size = 2 + n_res  # ELU + upsample + n_res residual blocks
+        decoder_upsample_indices = [1 + i * block_size + 1 for i in range(n_ratios)]
+        decoder_final_idx = 1 + n_ratios * block_size + 1  # after all blocks + final ELU
+
+        # In PyTorch's flat Sequential for encoder:
+        #   0: init_conv1d
+        #   then for each ratio i: [ResBlock_0, ..., ResBlock_{n_res-1}, ELU, Conv(downsample)]
+        #   each ratio block has (n_res + 2) entries
+        #   final: [ELU, final_conv1d]
+        encoder_residual_indices = [1 + i * block_size for i in range(n_ratios)]
+        encoder_final_idx = 1 + n_ratios * block_size + 1
+
         weights = []
         for k, v in mx.load(file).items():
             v: mx.array = v
@@ -204,28 +225,39 @@ class Mimi(nn.Module):
                 k = k.replace(".linear1.weight", ".gating.linear1.weight")
             if k.endswith(".linear2.weight"):
                 k = k.replace(".linear2.weight", ".gating.linear2.weight")
-            # Awfully hardcoded matching between the pytorch layers and their mlx equivalent :(
-            for layerIdx, decoderIdx in enumerate([2, 5, 8, 11]):
+
+            # Map PyTorch flat-sequential decoder indices to structured MLX names.
+            for layer_idx in range(n_ratios):
+                dec_up_idx = decoder_upsample_indices[layer_idx]
                 k = k.replace(
-                    f"decoder.{decoderIdx}.", f"decoder.layers.{layerIdx}.upsample."
+                    f"decoder.{dec_up_idx}.", f"decoder.layers.{layer_idx}.upsample."
                 )
+                for res_idx in range(n_res):
+                    dec_res_idx = dec_up_idx + 1 + res_idx
+                    k = k.replace(
+                        f"decoder.{dec_res_idx}.",
+                        f"decoder.layers.{layer_idx}.residuals.{res_idx}.",
+                    )
+
+            # Map PyTorch flat-sequential encoder indices to structured MLX names.
+            for layer_idx in range(n_ratios):
+                enc_res_base = encoder_residual_indices[layer_idx]
+                for res_idx in range(n_res):
+                    enc_res_idx = enc_res_base + res_idx
+                    k = k.replace(
+                        f"encoder.{enc_res_idx}.",
+                        f"encoder.layers.{layer_idx}.residuals.{res_idx}.",
+                    )
+                enc_down_idx = enc_res_base + n_res + 1  # skip residuals + ELU
                 k = k.replace(
-                    f"decoder.{decoderIdx + 1}.",
-                    f"decoder.layers.{layerIdx}.residuals.0.",
-                )
-            for layerIdx, encoderIdx in enumerate([1, 4, 7, 10]):
-                k = k.replace(
-                    f"encoder.{encoderIdx}.", f"encoder.layers.{layerIdx}.residuals.0."
-                )
-                k = k.replace(
-                    f"encoder.{encoderIdx + 2}.",
-                    f"encoder.layers.{layerIdx}.downsample.",
+                    f"encoder.{enc_down_idx}.",
+                    f"encoder.layers.{layer_idx}.downsample.",
                 )
 
             k = k.replace("decoder.0.", "decoder.init_conv1d.")
-            k = k.replace("decoder.14.", "decoder.final_conv1d.")
+            k = k.replace(f"decoder.{decoder_final_idx}.", "decoder.final_conv1d.")
             k = k.replace("encoder.0.", "encoder.init_conv1d.")
-            k = k.replace("encoder.14.", "encoder.final_conv1d.")
+            k = k.replace(f"encoder.{encoder_final_idx}.", "encoder.final_conv1d.")
             k = k.replace(".block.1.", ".block.0.")
             k = k.replace(".block.3.", ".block.1.")
 

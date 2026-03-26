@@ -84,7 +84,6 @@ class CrossAttention(nn.Module):
         cross_attention_src: mx.array,
         cache: LayerCache,
     ) -> mx.array:
-        # TODO: Add some cross-attention kv caching.
         assert self.cfg.kv_repeat == 1, "only kv_repeat==1 is supported"
 
         b, t, hd = xs.shape
@@ -143,13 +142,15 @@ class Attention(nn.Module):
             k = self.rope(k, offset=cache.offset)
 
         k, v = cache.update_and_fetch(k, v)
-        k_len = k.shape[2]
-        k_target_len = t + min(self.cfg.context, k_len - t)
-        # TODO(laurent): the trimming below is incorrect for RotatingKVCache.
-        # https://github.com/kyutai-labs/delayed-streams-modeling/issues/106
-        if k_target_len < k_len:
-            k = k[:, :, k_len - k_target_len :]
-            v = v[:, :, k_len - k_target_len :]
+        # Only trim for regular KVCache. RotatingKVCache already enforces its
+        # own context window via max_size, so additional trimming would corrupt
+        # the circular buffer layout.
+        if not isinstance(cache, RotatingKVCache):
+            k_len = k.shape[2]
+            k_target_len = t + min(self.cfg.context, k_len - t)
+            if k_target_len < k_len:
+                k = k[:, :, k_len - k_target_len :]
+                v = v[:, :, k_len - k_target_len :]
 
         xs = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
         xs = xs.transpose(0, 2, 1, 3).reshape(b, t, hd)

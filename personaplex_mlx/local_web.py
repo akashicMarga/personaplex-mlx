@@ -140,6 +140,13 @@ class ServerState:
         async def encode_loop():
             while True:
                 if close:
+                    # Flush remaining input before exiting.
+                    while not input_queue.empty():
+                        try:
+                            pcm = input_queue.get(block=False)
+                            audio_tokenizer.encode(pcm)
+                        except queue.Empty:
+                            break
                     return
                 await asyncio.sleep(0.001)
                 try:
@@ -183,14 +190,14 @@ class ServerState:
                     if len(msg) > 0:
                         try:
                             await ws.send_bytes(b"\x01" + msg)
-                        except aiohttp.ClientConnectionResetError:
+                        except (aiohttp.ClientConnectionResetError, ConnectionResetError, OSError):
                             close = True
                             return
                 try:
                     text = text_queue.get(block=False)
                     try:
                         await ws.send_bytes(b"\x02" + text.encode("utf-8"))
-                    except aiohttp.ClientConnectionResetError:
+                    except (aiohttp.ClientConnectionResetError, ConnectionResetError, OSError):
                         close = True
                         return
                 except queue.Empty:
@@ -210,6 +217,15 @@ class ServerState:
         return ws
 
 
+def _safe_extractall(tar: tarfile.TarFile, dest: Path) -> None:
+    """Extract tar contents safely, rejecting path traversal attempts."""
+    for member in tar.getmembers():
+        member_path = (dest / member.name).resolve()
+        if not str(member_path).startswith(str(dest.resolve())):
+            raise ValueError(f"tar member {member.name!r} escapes destination directory")
+    tar.extractall(path=dest)
+
+
 def get_static_path(static: Optional[str]) -> Optional[str]:
     if static is None:
         log("info", "retrieving static content")
@@ -218,7 +234,7 @@ def get_static_path(static: Optional[str]) -> Optional[str]:
         dist = dist_tgz_path.parent / "dist"
         if not dist.exists():
             with tarfile.open(dist_tgz_path, "r:gz") as tar:
-                tar.extractall(path=dist_tgz_path.parent)
+                _safe_extractall(tar, dist_tgz_path.parent)
         return str(dist)
     if static == "none":
         return None

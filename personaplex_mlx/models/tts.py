@@ -497,13 +497,11 @@ class TTSModel:
             **kwargs: passed to `moshi.models.lm.LMGen`.
         """
 
-        # TODO(laurent):
-        # Re-enable the padding bonus.
-        # def _main_wrapper(*args, **kwargs):
-        #     transformer_out, text_logits = original(*args, **kwargs)
-        #     if self.padding_bonus:
-        #         text_logits[..., self.machine.token_ids.pad] += self.padding_bonus
-        #     return transformer_out, text_logits
+        text_sampler_kwargs = {"temp": self.temp}
+        if self.padding_bonus != 0.0:
+            text_sampler_kwargs["logit_bias"] = {
+                self.machine.token_ids.pad: self.padding_bonus
+            }
 
         for c in self.lm.transformer_cache:
             c.reset()
@@ -612,15 +610,14 @@ class TTSModel:
         lm_gen = LmGen(
             self.lm,
             max_steps=self.max_gen_length,
-            text_sampler=Sampler(temp=self.temp),
+            text_sampler=Sampler(**text_sampler_kwargs),
             audio_sampler=Sampler(temp=self.temp),
             batch_size=batch_size,
             cfg_coef=self.cfg_coef,
             on_text_hook=_on_text_hook,
             on_audio_hook=_on_audio_hook,
-            # TODO(laurent):
-            # cfg_is_masked_until=cfg_is_masked_until,
-            # cfg_is_no_text=cfg_is_no_text,
+            cfg_is_masked_until=cfg_is_masked_until,
+            cfg_is_no_text=cfg_is_no_text,
         )
 
         logged_text_tokens = [[] for _ in states]

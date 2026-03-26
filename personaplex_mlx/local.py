@@ -54,18 +54,21 @@ def full_warmup(audio_tokenizer, client_to_server, server_to_client, rounds: int
     for _ in range(rounds):
         pcm_data = np.zeros(1920, dtype=np.float32)
         audio_tokenizer.encode(pcm_data)
-        while True:
+        # Wait for encoded data with a bounded number of retries.
+        for _ in range(200):  # Up to 1 second
             time.sleep(0.005)
             data = audio_tokenizer.get_encoded()
             if data is not None:
                 client_to_server.put_nowait(data)
                 break
+        else:
+            continue  # Skip this round if encoding timed out.
         try:
-            audio_tokens = server_to_client.get(timeout=0.05)
+            audio_tokens = server_to_client.get(timeout=0.5)
         except queue.Empty:
             continue
         audio_tokenizer.decode(audio_tokens)
-        while True:
+        for _ in range(200):  # Up to 1 second
             time.sleep(0.005)
             if audio_tokenizer.get_decoded() is not None:
                 break
@@ -124,7 +127,10 @@ def server(printer_q, client_to_server, server_to_client, args):
     printed_header = False
     try:
         while True:
-            data = client_to_server.get()
+            try:
+                data = client_to_server.get(timeout=5.0)
+            except queue.Empty:
+                continue
             printer_q.put_nowait((PrinterType.EVENT, "s_get"))
             if not printed_header:
                 printed_header = True
@@ -146,6 +152,8 @@ def server(printer_q, client_to_server, server_to_client, args):
             printer_q.put_nowait((PrinterType.EVENT, "s_put"))
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        printer_q.put_nowait((PrinterType.ERROR, f"[SERVER] {exc}"))
 
 
 def client(printer_q, client_to_server, server_to_client, args):
@@ -360,8 +368,12 @@ def main():
             json.dump(chrome_events, fobj)
         printer.log("info", f"trace written to {args.trace_output}")
 
-    p1.join()
-    p2.join()
+    p1.join(timeout=5)
+    p2.join(timeout=5)
+    if p1.is_alive():
+        p1.terminate()
+    if p2.is_alive():
+        p2.terminate()
     printer.log("info", "All done")
 
 
